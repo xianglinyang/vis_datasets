@@ -60,7 +60,6 @@ train_data, test_data = datasets.IMDB.splits(TEXT, LABEL)
 train_data, valid_data = train_data.split(random_state = random.seed(SEED))
 
 LABEL.build_vocab(train_data)
-# LABEL.build_vocab(test_data)
 
 BATCH_SIZE = 128
 
@@ -72,7 +71,7 @@ train_iterator, valid_iterator, test_iterator = data.BucketIterator.splits(
     device = device)
 
 # >>>>>>>>>>Record Data
-# writer.add_training_data(train_iterator) # use test_transform
+writer.add_training_data(train_iterator) # use test_transform
 # writer.add_testing_data(test_iterator)
 # <<<<<<<<<
 
@@ -235,7 +234,7 @@ for epoch in range(N_EPOCHS):
     train_loss, train_acc = train(model, train_iterator, optimizer, criterion)
     valid_loss, valid_acc = evaluate(model, valid_iterator, criterion)
 
-    writer.add_checkpoint_data(model.state_dict(), idxs, epoch, epoch-1)
+    writer.add_checkpoint_data(model.state_dict(), idxs, epoch+1, epoch)
         
     end_time = time.time()
         
