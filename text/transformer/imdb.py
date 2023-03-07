@@ -46,12 +46,14 @@ def tokenize_and_cut(sentence):
 
 TEXT = data.Field(batch_first = True,
                   use_vocab = False,
-                  tokenize = tokenize_and_cut,
+                #   tokenize = tokenize_and_cut,
                   preprocessing = tokenizer.convert_tokens_to_ids,
                   init_token = init_token_idx,
                   eos_token = eos_token_idx,
                   pad_token = pad_token_idx,
-                  unk_token = unk_token_idx)
+                  unk_token = unk_token_idx,
+                  fix_length = max_input_length
+                  )
 
 LABEL = data.LabelField(dtype = torch.float)
 
@@ -61,9 +63,9 @@ train_data, valid_data = train_data.split(random_state = random.seed(SEED))
 
 LABEL.build_vocab(train_data)
 
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:' if torch.cuda.is_available() else 'cpu')
 
 train_iterator, valid_iterator, test_iterator = data.BucketIterator.splits(
     (train_data, valid_data, test_data), 
@@ -72,7 +74,7 @@ train_iterator, valid_iterator, test_iterator = data.BucketIterator.splits(
 
 # >>>>>>>>>>Record Data
 writer.add_training_data(train_iterator) # use test_transform
-# writer.add_testing_data(test_iterator)
+writer.add_testing_data(test_iterator)
 # <<<<<<<<<
 
 bert = BertModel.from_pretrained('bert-base-uncased')
@@ -88,7 +90,6 @@ class BERTGRUSentiment(nn.Module):
         
         super().__init__()
         self.bert = bert
-        # self.bert = BertModel.from_pretrained('bert-base-uncased')
         embedding_dim = self.bert.config.to_dict()['hidden_size']
         self.rnn = nn.GRU(embedding_dim,
                           hidden_dim,
@@ -101,22 +102,17 @@ class BERTGRUSentiment(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, text):
-        #text = [batch size, sent len]
         with torch.no_grad():
             embedded = self.bert(text)[0]
-        #embedded = [batch size, sent len, emb dim]
         _, hidden = self.rnn(embedded)
-        #hidden = [n layers * n directions, batch size, emb dim]
         if self.rnn.bidirectional:
             hidden = self.dropout(torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim = 1))
         else:
             hidden = self.dropout(hidden[-1,:,:])
-        #hidden = [batch size, hid dim]
         output = self.out(hidden)
-        #output = [batch size, out dim]
         return output
     
-    def feature_function(self,text):
+    def feature(self,text):
         with torch.no_grad():
             embedded = self.bert(text)[0]
         _, hidden = self.rnn(embedded)
@@ -126,7 +122,7 @@ class BERTGRUSentiment(nn.Module):
             hidden = self.dropout(hidden[-1,:,:])
         return hidden
     
-    def prediction_function(self, hidden):
+    def prediction(self, hidden):
         output = self.out(hidden)
         #output = [batch size, out dim]
         return output
@@ -134,7 +130,7 @@ class BERTGRUSentiment(nn.Module):
 
 
 HIDDEN_DIM = 256
-OUTPUT_DIM = 1
+OUTPUT_DIM = 2  # 1
 N_LAYERS = 2
 BIDIRECTIONAL = True
 DROPOUT = 0.25
@@ -152,7 +148,7 @@ for name, param in model.named_parameters():
 
 
 optimizer = optim.Adam(model.parameters())
-criterion = nn.BCEWithLogitsLoss()
+criterion = nn.CrossEntropyLoss()
 
 model = model.to(device)
 criterion = criterion.to(device)
@@ -162,10 +158,13 @@ def binary_accuracy(preds, y):
     Returns accuracy per batch, i.e. if you get 8/10 right, this returns 0.8, NOT 8
     """
 
-    #round predictions to the closest integer
-    rounded_preds = torch.round(torch.sigmoid(preds))
-    correct = (rounded_preds == y).float() #convert into float for division 
-    acc = correct.sum() / len(correct)
+    # #round predictions to the closest integer
+    # rounded_preds = torch.round(torch.sigmoid(preds))
+    # correct = (rounded_preds == y).float() #convert into float for division 
+    # acc = correct.sum() / len(correct)
+    prediction = preds.argmax(axis=1)
+    correct = (prediction==y).float()
+    acc = correct.sum()/len(correct)
     return acc
 
 def train(model, iterator, optimizer, criterion):
@@ -175,15 +174,16 @@ def train(model, iterator, optimizer, criterion):
     
     model.train()
     
-    for batch in iterator:
+    for text, label in iterator:
+        label = label.to(dtype=torch.long)
         
         optimizer.zero_grad()
         
-        predictions = model(batch.text).squeeze(1)
+        predictions = model(text)
         
-        loss = criterion(predictions, batch.label)
+        loss = criterion(predictions, label)
         
-        acc = binary_accuracy(predictions, batch.label)
+        acc = binary_accuracy(predictions, label)
         
         loss.backward()
         
@@ -203,13 +203,14 @@ def evaluate(model, iterator, criterion):
     
     with torch.no_grad():
     
-        for batch in iterator:
+        for text, label in iterator:
+            label = label.to(dtype=torch.long)
 
-            predictions = model(batch.text).squeeze(1)
+            predictions = model(text)
             
-            loss = criterion(predictions, batch.label)
+            loss = criterion(predictions, label)
             
-            acc = binary_accuracy(predictions, batch.label)
+            acc = binary_accuracy(predictions, label)
 
             epoch_loss += loss.item()
             epoch_acc += acc.item()
